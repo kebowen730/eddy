@@ -1,5 +1,7 @@
 # Eddy
 
+**Play it: [eddy-ink.fly.dev](https://eddy-ink.fly.dev/)**
+
 A slow, living pool of ink. You stir it, and it stirs back. Three pigments chase
 each other through a real fluid, forming spirals that unwind and reform. Left
 alone, it finds its own rhythm. There are no points and no goals.
