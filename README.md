@@ -35,13 +35,39 @@ npm run build
 
 The static site is written to `dist/`.
 
+## Versions
+
+Every release stays playable at its own address, and the main site always shows
+the newest one.
+
+| Version | Play |
+| --- | --- |
+| latest | [eddy-ink.fly.dev](https://eddy-ink.fly.dev/) |
+| v1 | [eddy-ink-v1.fly.dev](https://eddy-ink-v1.fly.dev/) |
+
 ## Deploy
+
+The app is a static build served by nginx in Docker on Fly.io. Each version runs
+as its own Fly app, built from exactly the tagged commit.
+
+```sh
+scripts/release.sh v2
+```
+
+That tags the current commit as `v2`, publishes a GitHub release, deploys it to
+`eddy-ink-v2.fly.dev` and updates the latest site. Add a row to the table above
+when you do. To redeploy an existing tag to its own address without touching the
+latest site:
+
+```sh
+scripts/release.sh v1 --no-latest
+```
+
+To push work in progress to the latest site only, without making a release:
 
 ```sh
 fly deploy
 ```
-
-The app is a static build served by nginx in Docker on Fly.io.
 
 ## How it works
 
