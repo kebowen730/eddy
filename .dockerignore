@@ -4,3 +4,8 @@ dist
 .DS_Store
 *.log
 .env*
+DESIGN.md
+Dockerfile
+README.md
+fly.toml
+scripts

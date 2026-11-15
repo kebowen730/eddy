@@ -74,19 +74,30 @@ void main() {
   fragColor = vec4(0.5 * ((R - L) - uAspect * (T - B)), 0.0, 0.0, 1.0);
 }`;
 
-// Vorticity confinement + dye-driven "front force"; also clamps the maximum speed.
+// Vorticity confinement + dye-driven "front force"; also the sediment bed's steering (heavy ink
+// slides downhill, flow turns along contours, shoals drag); finally clamps the maximum speed.
 const VORTICITY_FS = HEAD + `
 in vec2 vUv;
 out vec4 fragColor;
 uniform sampler2D uVelocity;
 uniform sampler2D uCurl;
 uniform sampler2D uDye;
+uniform sampler2D uBed;
 uniform float uDt;
 uniform float uVorticity;
 uniform float uFrontForce;
 uniform float uChi;
 uniform float uAspect;
 uniform float uMaxVel;
+uniform bool uManual;
+uniform float uBedSlope;
+uniform float uBedDeflect;
+uniform float uBedDrag;
+` + SAMPLE_CHUNK + `
+float bedH(vec2 uv) {
+  vec3 b = uManual ? bilerp(uBed, uv).rgb : texture(uBed, uv).rgb;
+  return b.r + b.g + b.b;
+}
 void main() {
   vec2 t = 1.0 / vec2(textureSize(uVelocity, 0));
   float cL = texture(uCurl, vUv - vec2(t.x, 0.0)).x;
@@ -104,11 +115,36 @@ void main() {
   vec3 dR = texture(uDye, vUv + vec2(t.x, 0.0)).rgb;
   vec3 dT = texture(uDye, vUv + vec2(0.0, t.y)).rgb;
   vec3 dB = texture(uDye, vUv - vec2(0.0, t.y)).rgb;
+  vec3 dC = texture(uDye, vUv).rgb;
   vec2 g = 0.5 * vec2((dR.r - dR.g) - (dL.r - dL.g), (dT.r - dT.g) - (dB.r - dB.g));
   f += vec2(-g.y, g.x) * (uChi * uFrontForce * 10.0);
 
+  // Bed relief, sampled one *velocity* texel away so the gradient is smooth even though the bed
+  // lives on the finer dye grid. Gradient is per velocity cell, normalised to a 160-row grid so
+  // the feel does not change between the desktop and mobile grid sizes.
+  float hC = bedH(vUv);
+  float hL = bedH(vUv - vec2(t.x, 0.0));
+  float hR = bedH(vUv + vec2(t.x, 0.0));
+  float hT = bedH(vUv + vec2(0.0, t.y));
+  float hB = bedH(vUv - vec2(0.0, t.y));
+  vec2 gh = 0.5 * vec2(hR - hL, hT - hB) * (float(textureSize(uVelocity, 0).y) / 160.0);
+  float rho = dC.r + dC.g + dC.b;
+  // K = 3: slope 0.5, ink density ~0.8 and a unit step over ~4 cells (gh ~ 0.25) -> ~0.3 heights/s^2
+  f += -uBedSlope * rho * gh * 3.0;
+
   f.x /= uAspect; // physical -> UV-x
   vec2 v = texture(uVelocity, vUv).xy + f * uDt;
+
+  // Flow heading uphill is turned along the contours: remove a fraction of its uphill component.
+  // S = 4: on a steep ridge (|gh| ~ 0.25) with bedDeflect = 3 the rate is ~3/s, so most of the
+  // uphill flow is gone within about a second; on gentle slopes (|gh| ~ 0.02) it is ~0.25/s.
+  float sm = length(gh);
+  vec2 nrm = gh / max(sm, 1e-6);
+  float up = max(dot(v * vec2(uAspect, 1.0), nrm), 0.0);
+  float fr = 1.0 - exp(-uBedDeflect * sm * uDt * 4.0);
+  v -= (nrm * (up * fr)) / vec2(uAspect, 1.0); // applied as a delta so an empty bed is a no-op
+  v *= exp(-uBedDrag * hC * uDt);
+
   float sp = length(v);
   if (sp > uMaxVel) v *= uMaxVel / sp;
   fragColor = vec4(v, 0.0, 1.0);
@@ -232,6 +268,26 @@ void main() {
   fragColor = vec4(base.xy + acc, base.zw);
 }`;
 
+// Shared by the reaction and the bed's deposit pass so "dying" means exactly the same thing in both.
+// Bed fertility lowers the Allee threshold: old sediment makes ink thrive at lower density.
+const REACT_STATE_CHUNK = `
+uniform float uAllee;
+uniform float uPureLo;
+uniform float uPureHi;
+uniform float uBedMax;
+uniform float uBedFert;
+float bedFert(float h) { return uBedFert * clamp(h / max(uBedMax, 1e-3), 0.0, 1.0); }
+void reactState(vec3 c, float fert, out float rho, out float gate, out float live) {
+  rho = c.r + c.g + c.b;
+  float allee = uAllee * (1.0 - 0.6 * fert);
+  gate = smoothstep(allee * 0.5, allee * 1.5, rho);
+  // Ink only thrives where the chase is happening: a region owned by a single species
+  // stops growing and slowly starves, so flat fields thin out to veils and the void returns.
+  float purity = max(c.r, max(c.g, c.b)) / max(rho, 1e-4);
+  live = 1.0 - smoothstep(uPureLo, uPureHi, purity);
+}
+`;
+
 // The heart of the game: cyclic competition with diffusion, one explicit Euler substep.
 //   d s_i/dt = s_i * (growth*gate*(1-rho) - predation*P_i - decay - fade*(1-gate)) + D * lap(s_i)
 // P_i = density of the species that preys on i. Chirality blends between the two cycle directions.
@@ -240,18 +296,17 @@ const REACT_FS = HEAD + `
 in vec2 vUv;
 out vec4 fragColor;
 uniform sampler2D uDye;
+uniform sampler2D uBed;
 uniform float uDt;
 uniform float uGrowth;
 uniform float uPred;
 uniform float uDecay;
 uniform float uDiff;   // diffusion in cell^2 / s
 uniform float uChi;    // smoothed chirality in [-1, 1]
-uniform float uAllee;
 uniform float uFade;
 uniform float uFloor;
 uniform float uStarve;
-uniform float uPureLo;
-uniform float uPureHi;
+` + REACT_STATE_CHUNK + `
 void main() {
   vec2 t = 1.0 / vec2(textureSize(uDye, 0));
   vec3 c  = texture(uDye, vUv).rgb;
@@ -266,24 +321,117 @@ void main() {
   // isotropic 9-point Laplacian in cell units
   vec3 lap = (4.0 * (n + s + e + w) + (ne + nw + se + sw) - 20.0 * c) / 6.0;
 
-  float rho = c.r + c.g + c.b;
+  vec3 bd = texture(uBed, vUv).rgb;
+  float fert = bedFert(bd.r + bd.g + bd.b);
+  float rho, gate, live;
+  reactState(c, fert, rho, gate, live);
   float wp = 0.5 + 0.5 * uChi;
   float wm = 1.0 - wp;
   // chirality +1: c eats a, a eats b, b eats c.  chirality -1: b eats a, c eats b, a eats c.
   vec3 pred = vec3(wp * c.b + wm * c.g,
                    wp * c.r + wm * c.b,
                    wp * c.g + wm * c.r);
-  float gate = smoothstep(uAllee * 0.5, uAllee * 1.5, rho);
-  // Ink only thrives where the chase is happening: a region owned by a single species
-  // stops growing and slowly starves, so flat fields thin out to veils and the void returns.
-  float purity = max(c.r, max(c.g, c.b)) / max(rho, 1e-4);
-  float live = 1.0 - smoothstep(uPureLo, uPureHi, purity);
-  vec3 rate = vec3(uGrowth * gate * live * (1.0 - rho) - uDecay - uStarve * (1.0 - live)
-                   - uFade * (1.0 - gate)) - uPred * pred;
+  vec3 rate = vec3(uGrowth * (1.0 + 0.5 * fert) * gate * live * (1.0 - rho) - uDecay
+                   - uStarve * (1.0 - live) - uFade * (1.0 - gate)) - uPred * pred;
   vec3 next = c + uDt * (c * rate + uDiff * lap);
   next = clamp(next, 0.0, 1.5);
   next *= step(vec3(uFloor), next); // extinction floor: vanishing species really vanish
   fragColor = vec4(next, 1.0);
+}`;
+
+// --- sediment bed -----------------------------------------------------------------------------
+// bed.rgb = settled mass of species a,b,c (same grid as the dye). Scouring is shared by the lift
+// pass (dye gains bedLift of it) and the bed pass (the bed loses all of it), so both must compute
+// it from the same inputs: the pre-update bed and the velocity.
+const SCOUR_CHUNK = `
+uniform float uAspect;
+uniform float uBedErode;
+uniform float uBedErodeLo;
+uniform float uBedErodeHi;
+vec3 scourAmt(vec3 bed, vec2 vel, float dt) {
+  float sp = length(vel * vec2(uAspect, 1.0)); // physical speed, heights/s
+  float k = uBedErode * smoothstep(uBedErodeLo, uBedErodeHi, sp) * dt;
+  return bed * min(k, 1.0);
+}
+`;
+
+// Lift: scoured silt rises back into the water as ink of its old colour.
+const LIFT_FS = HEAD + `
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D uDye;
+uniform sampler2D uBed;
+uniform sampler2D uVelocity;
+uniform float uDt;
+uniform float uLift;
+` + SCOUR_CHUNK + `
+void main() {
+  vec3 d = texture(uDye, vUv).rgb;
+  vec3 b = texture(uBed, vUv).rgb;
+  vec2 vel = texture(uVelocity, vUv).xy;
+  d += uLift * scourAmt(b, vel, uDt);
+  fragColor = vec4(clamp(d, 0.0, 1.5), 1.0);
+}`;
+
+// Bed update. uDye is the dye AFTER the lift pass, i.e. exactly what the reaction will then kill,
+// so deposit is a fraction of the real death flux; the lifted silt is only ever bedLift of what
+// the bed lost, so no mass is created.
+const BED_FS = HEAD + `
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D uDye;
+uniform sampler2D uBed;
+uniform sampler2D uVelocity;
+uniform float uDt;       // real frame dt (scour, settling)
+uniform float uTs;       // dt * timeScale (deposit follows the reaction clock)
+uniform float uDeposit;
+uniform float uDecay;
+uniform float uStarve;
+uniform float uFade;
+uniform float uSettle;   // total uniform decay rate: bedSettle + scour(rate)
+uniform float uSmoothK;  // bedSmooth * dt, <= 0.2
+uniform float uFadeShare;
+uniform float uSeed;
+` + REACT_STATE_CHUNK + SCOUR_CHUNK + `
+// The bed changes by less than one half-float step per frame. Some GPUs truncate when they
+// store to a 16F target, which would drain the floor by a step every frame, so round to the
+// half-float grid ourselves, stochastically, which is unbiased whatever the hardware does.
+float hash31(vec3 p) {
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+vec3 quantize(vec3 v) {
+  vec3 ulp = exp2(floor(log2(max(v, vec3(1e-5)))) - 10.0);
+  vec3 r = vec3(hash31(vec3(gl_FragCoord.xy, uSeed)),
+                hash31(vec3(gl_FragCoord.yx + 19.7, uSeed + 3.1)),
+                hash31(vec3(gl_FragCoord.xy + 71.3, uSeed + 7.7)));
+  return floor(v / ulp + r) * ulp;
+}
+void main() {
+  vec2 t = 1.0 / vec2(textureSize(uBed, 0));
+  vec3 b  = texture(uBed, vUv).rgb;
+  vec3 bn = texture(uBed, vUv + vec2(0.0, t.y)).rgb;
+  vec3 bs = texture(uBed, vUv - vec2(0.0, t.y)).rgb;
+  vec3 be = texture(uBed, vUv + vec2(t.x, 0.0)).rgb;
+  vec3 bw = texture(uBed, vUv - vec2(t.x, 0.0)).rgb;
+  vec3 lap = bn + bs + be + bw - 4.0 * b;
+
+  vec3 c = texture(uDye, vUv).rgb;
+  vec2 vel = texture(uVelocity, vUv).xy;
+  float h = b.r + b.g + b.b;
+  float rho, gate, live;
+  reactState(c, bedFert(h), rho, gate, live);
+  // Thin veils fading at the edge of every stroke count for less than ink that starved in place,
+  // otherwise each brush halo lays down floor at once.
+  vec3 dying = c * (uDecay + uStarve * (1.0 - live) + uFadeShare * uFade * (1.0 - gate));
+  float room = clamp(1.0 - h / max(uBedMax, 1e-3), 0.0, 1.0); // soft cap: saturates smoothly
+  vec3 dep = min(uDeposit * dying * uTs * room, c);
+
+  vec3 nb = (b - scourAmt(b, vel, uDt)) * exp(-uSettle * uDt) + uSmoothK * lap + dep;
+  nb = max(nb, 0.0);
+  nb *= step(vec3(1e-4), nb);
+  fragColor = vec4(quantize(nb), 1.0);
 }`;
 
 const COPY_FS = HEAD + `
@@ -313,6 +461,75 @@ void main() {
   if (uMode == 0) v = clamp(acc.rgb, 0.0, 1.0);
   else v = vec3(clamp(acc.rg * uScale * 0.5 + 0.5, 0.0, 1.0), 0.5);
   fragColor = vec4(v, 1.0);
+}`;
+
+// Area-average downsample for snapshots. uTaps = taps per axis across one output texel's footprint
+// (sized to the source/target ratio, max 8x8, so a big ratio does not alias like one bilinear tap).
+// uEncode = 1: write sqrt(clamp(v / 1.5, 0, 1)) for the RGBA8 snapshot; 0: raw float for the
+// low-pass used by restore's nudge.
+const CAPTURE_FS = HEAD + `
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D uSrc;
+uniform vec2 uFoot;
+uniform vec2 uTaps;
+uniform int uEncode;
+uniform bool uManual;
+` + SAMPLE_CHUNK + `
+void main() {
+  int nx = int(uTaps.x + 0.5);
+  int ny = int(uTaps.y + 0.5);
+  vec3 acc = vec3(0.0);
+  for (int j = 0; j < 8; j++) {
+    if (j >= ny) break;
+    for (int i = 0; i < 8; i++) {
+      if (i >= nx) break;
+      vec2 o = (vec2(float(i), float(j)) + 0.5) / uTaps - 0.5;
+      vec2 uv = vUv + o * uFoot;
+      acc += uManual ? bilerp(uSrc, uv).rgb : texture(uSrc, uv).rgb;
+    }
+  }
+  acc /= float(nx * ny);
+  if (uEncode == 1) acc = sqrt(clamp(acc / 1.5, 0.0, 1.0));
+  fragColor = vec4(acc, 1.0);
+}`;
+
+// Decode an uploaded snapshot (v = (byte/255)^2 * 1.5), bilinearly upsample it, and either write it
+// (uUseBlend = 0) or nudge the field: max(0, x + blend * (S - L)). Taps are decoded before they are
+// interpolated so S lives in the same linear space as the float low-pass L.
+const RESTORE_FS = HEAD + `
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D uSnap;
+uniform sampler2D uLocal;
+uniform sampler2D uField;
+uniform float uBlend;
+uniform int uUseBlend;
+uniform bool uManualL;
+` + SAMPLE_CHUNK + `
+vec3 dec(vec3 e) { return e * e * 1.5; }
+vec3 snapAt(vec2 uv) {
+  vec2 sz = vec2(textureSize(uSnap, 0));
+  vec2 st = uv * sz - 0.5;
+  vec2 i = floor(st);
+  vec2 f = st - i;
+  vec2 b = (i + 0.5) / sz;
+  vec2 tx = 1.0 / sz;
+  vec3 p00 = dec(texture(uSnap, b).rgb);
+  vec3 p10 = dec(texture(uSnap, b + vec2(tx.x, 0.0)).rgb);
+  vec3 p01 = dec(texture(uSnap, b + vec2(0.0, tx.y)).rgb);
+  vec3 p11 = dec(texture(uSnap, b + tx).rgb);
+  return mix(mix(p00, p10, f.x), mix(p01, p11, f.x), f.y);
+}
+void main() {
+  vec3 S = snapAt(vUv);
+  vec3 o = S;
+  if (uUseBlend == 1) {
+    vec3 x = texture(uField, vUv).rgb;
+    vec3 L = uManualL ? bilerp(uLocal, vUv).rgb : texture(uLocal, vUv).rgb;
+    o = max(x + uBlend * (S - L), 0.0);
+  }
+  fragColor = vec4(clamp(o, 0.0, 1.5), 1.0);
 }`;
 
 // ---------------------------------------------------------------------------------------------
@@ -355,6 +572,20 @@ export function createSim(gl, { aspect = 1 } = {}) {
     maxVelocity: 4,          // speed clamp (UV/s)
     wellSwirl: 0.25,         // tangential fraction of a well's pull
     probeVelScale: 4,
+    // --- sediment bed (see DESIGN.md v2) ---
+    bedDeposit: 0.1,          // fraction of dying ink mass that settles (0 disables sediment)
+    bedMax: 1.0,             // soft cap on bed height
+    bedErode: 0.35,           // scour rate (1/s) of the bed under full-speed flow
+    bedErodeLo: 0.25,        // flow speed (heights/s) where scouring starts
+    bedErodeHi: 1.2,         // flow speed where scouring is at full rate
+    bedLift: 0.5,            // fraction of scoured sediment that returns to the water as ink
+    bedSettle: 0.003,        // slow uniform decay of the bed (1/s)
+    bedSmooth: 0.6,          // diffusion of the bed in cell^2/s, keeps relief smooth
+    bedFadeShare: 0.6,       // how much void-fade loss counts toward deposit, relative to starvation
+    bedDrag: 1.0,            // extra velocity damping (1/s) per unit bed height
+    bedDeflect: 3.0,         // how strongly flow heading uphill is turned along the contours
+    bedSlope: 0.5,           // downhill acceleration of ink: f = -bedSlope * rho * grad(h)
+    bedFertility: 0.3,       // 0..1: how much a full bed lowers the Allee threshold / boosts growth
   };
 
   // --- programs ---
@@ -371,6 +602,10 @@ export function createSim(gl, { aspect = 1 } = {}) {
   const progReact = mk(REACT_FS);
   const progCopy = mk(COPY_FS);
   const progProbe = mk(PROBE_FS);
+  const progLift = mk(LIFT_FS);
+  const progBed = mk(BED_FS);
+  const progCapture = mk(CAPTURE_FS);
+  const progRestore = mk(RESTORE_FS);
 
   // Uniform setters (null/undefined locations are no-ops in WebGL).
   const f1 = (p, n, v) => gl.uniform1f(p.uniforms[n] ?? null, v);
@@ -381,8 +616,11 @@ export function createSim(gl, { aspect = 1 } = {}) {
 
   // --- state ---
   let curAspect = aspect;
-  let velocity, dye, curl, divergence, pressure;
-  let probeFboDye = null, probeFboVel = null;
+  let velocity, dye, curl, divergence, pressure, bed;
+  let probeFboDye = null, probeFboVel = null, probeFboBed = null;
+  let scourRate = 0;
+  const captureCache = new Map(); // "WxH" -> { dye: fbo, bed: fbo } RGBA8 targets
+  let lowFbo = null;              // float low-pass target reused by restore's nudge
   let dyeSizeArr = [1, 1];
   let chi = params.chirality;
   let clearRate = 0;
@@ -398,7 +636,14 @@ export function createSim(gl, { aspect = 1 } = {}) {
     balance: [1 / 3, 1 / 3, 1 / 3],
     density: 0,
     energy: 0,
+    sediment: 0,
   };
+  let probeBed = new Uint8Array(32 * 32 * 4);
+
+  // Taps per axis for an area-average from `src` texels down to `dst` texels (1..8).
+  function tapsFor(src, dst) {
+    return Math.min(8, Math.max(1, Math.ceil(src / dst)));
+  }
 
   function gridSizes(asp) {
     const small = typeof window !== 'undefined' &&
@@ -415,18 +660,21 @@ export function createSim(gl, { aspect = 1 } = {}) {
     const vp = gl.getParameter(gl.VIEWPORT);
     const { vw, vh, dw, dh } = gridSizes(asp);
     const oldDye = dye;
+    const oldBed = bed;
     if (velocity) velocity.dispose();
     if (curl) curl.dispose();
     if (divergence) divergence.dispose();
     if (pressure) pressure.dispose();
     if (probeFboDye) probeFboDye.dispose();
     if (probeFboVel) probeFboVel.dispose();
+    if (probeFboBed) probeFboBed.dispose();
 
     velocity = createDoubleFBO(gl, vw, vh);
     curl = createFBO(gl, vw, vh);
     divergence = createFBO(gl, vw, vh);
     pressure = createDoubleFBO(gl, vw, vh);
     dye = createDoubleFBO(gl, dw, dh);
+    bed = createDoubleFBO(gl, dw, dh);
     dyeSizeArr = [dye.w, dye.h];
 
     // preserve the picture by stretching the old dye into the new target
@@ -441,12 +689,26 @@ export function createSim(gl, { aspect = 1 } = {}) {
       }
       oldDye.dispose();
     }
+    // the bed is stretched exactly like the dye
+    if (oldBed) {
+      if (keepOldDye) {
+        gl.disable(gl.BLEND);
+        progCopy.use();
+        tex(progCopy, 'uSrc', oldBed.read.tex, 0);
+        bed.read.bind();
+        drawFullscreen(gl);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
+      oldBed.dispose();
+    }
 
     // probe targets
     probeData.w = 32;
     probeData.h = Math.max(1, Math.round(32 / asp));
     probeFboDye = createFBO(gl, probeData.w, probeData.h, { float: false });
     probeFboVel = createFBO(gl, probeData.w, probeData.h, { float: false });
+    probeFboBed = createFBO(gl, probeData.w, probeData.h, { float: false });
+    probeBed = new Uint8Array(probeData.w * probeData.h * 4);
     probeData.dye = new Uint8Array(probeData.w * probeData.h * 4);
     probeData.vel = new Uint8Array(probeData.w * probeData.h * 4);
     lastProbeFrame = -1000;
@@ -539,12 +801,61 @@ export function createSim(gl, { aspect = 1 } = {}) {
     f1(progReact, 'uPureLo', params.pureLo);
     f1(progReact, 'uPureHi', params.pureHi);
     f1(progReact, 'uFloor', params.extinctionFloor);
+    f1(progReact, 'uBedMax', params.bedMax);
+    f1(progReact, 'uBedFert', params.bedFertility);
+    tex(progReact, 'uBed', bed.read.tex, 1); // the bed is constant across substeps
     for (let i = 0; i < n; i++) {
       tex(progReact, 'uDye', dye.read.tex, 0);
       dye.write.bind();
       drawFullscreen(gl);
       dye.swap();
     }
+  }
+
+  // Dye += scoured silt, then the bed update. Both read the same pre-update bed and velocity.
+  function runBed(dt) {
+    const lo = params.bedErodeLo;
+    const hi = Math.max(params.bedErodeHi, lo + 1e-4);
+    const setScour = (p) => {
+      f1(p, 'uAspect', curAspect);
+      f1(p, 'uBedErode', params.bedErode);
+      f1(p, 'uBedErodeLo', lo);
+      f1(p, 'uBedErodeHi', hi);
+      f1(p, 'uDt', dt);
+    };
+
+    progLift.use();
+    tex(progLift, 'uDye', dye.read.tex, 0);
+    tex(progLift, 'uBed', bed.read.tex, 1);
+    tex(progLift, 'uVelocity', velocity.read.tex, 2);
+    setScour(progLift);
+    f1(progLift, 'uLift', params.bedLift);
+    dye.write.bind();
+    drawFullscreen(gl);
+    dye.swap();
+
+    progBed.use();
+    tex(progBed, 'uDye', dye.read.tex, 0); // post-lift dye: what the reaction is about to act on
+    tex(progBed, 'uBed', bed.read.tex, 1);
+    tex(progBed, 'uVelocity', velocity.read.tex, 2);
+    setScour(progBed);
+    f1(progBed, 'uTs', dt * params.timeScale);
+    f1(progBed, 'uDeposit', Math.max(0, params.bedDeposit));
+    f1(progBed, 'uDecay', params.decay);
+    f1(progBed, 'uStarve', params.starve);
+    f1(progBed, 'uFade', params.voidFade);
+    f1(progBed, 'uAllee', Math.max(1e-4, params.allee));
+    f1(progBed, 'uPureLo', params.pureLo);
+    f1(progBed, 'uPureHi', params.pureHi);
+    f1(progBed, 'uBedMax', params.bedMax);
+    f1(progBed, 'uBedFert', params.bedFertility);
+    f1(progBed, 'uSettle', Math.max(0, params.bedSettle) + scourRate);
+    f1(progBed, 'uSmoothK', Math.min(Math.max(0, params.bedSmooth) * dt, 0.2));
+    f1(progBed, 'uFadeShare', params.bedFadeShare);
+    f1(progBed, 'uSeed', (frame * 0.618034) % 97);
+    bed.write.bind();
+    drawFullscreen(gl);
+    bed.swap();
   }
 
   function runProbe() {
@@ -566,6 +877,12 @@ export function createSim(gl, { aspect = 1 } = {}) {
     probeFboVel.bind();
     drawFullscreen(gl);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, probeData.vel);
+
+    i1(progProbe, 'uMode', 0);
+    tex(progProbe, 'uSrc', bed.read.tex, 0);
+    probeFboBed.bind();
+    drawFullscreen(gl);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, probeBed);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(vp[0], vp[1], vp[2], vp[3]);
@@ -593,6 +910,12 @@ export function createSim(gl, { aspect = 1 } = {}) {
       probeData.balance[2] = sc / total;
     }
     probeData.energy = en / n;
+
+    // mean bed height: the three species channels each clamp at 1, so this is h = r+g+b in 0..1
+    const bb = probeBed;
+    let sh = 0;
+    for (let i = 0; i < n; i++) { const o = i * 4; sh += bb[o] + bb[o + 1] + bb[o + 2]; }
+    probeData.sediment = Math.min(1, sh / 255 / n);
   }
 
   // --- public API ---
@@ -602,6 +925,8 @@ export function createSim(gl, { aspect = 1 } = {}) {
     get dyeTex() { return dye.read.tex; },
     get velocityTex() { return velocity.read.tex; },
     get dyeSize() { return dyeSizeArr; },
+    get bedTex() { return bed.read.tex; },
+    get bedSize() { return dyeSizeArr; }, // the bed shares the dye grid
 
     /**
      * Reallocate for a new canvas aspect (no-op if it changed by <1%). Dye is stretched into the
@@ -686,6 +1011,11 @@ export function createSim(gl, { aspect = 1 } = {}) {
         tex(progVort, 'uVelocity', velocity.read.tex, 0);
         tex(progVort, 'uCurl', curl.tex, 1);
         tex(progVort, 'uDye', dye.read.tex, 2);
+        tex(progVort, 'uBed', bed.read.tex, 3);
+        i1(progVort, 'uManual', manual ? 1 : 0);
+        f1(progVort, 'uBedSlope', params.bedSlope);
+        f1(progVort, 'uBedDeflect', params.bedDeflect);
+        f1(progVort, 'uBedDrag', params.bedDrag);
         f1(progVort, 'uDt', dt);
         f1(progVort, 'uVorticity', params.vorticity);
         f1(progVort, 'uFrontForce', params.frontForce);
@@ -728,6 +1058,9 @@ export function createSim(gl, { aspect = 1 } = {}) {
         advect(velocity, velocity, dt, Math.exp(-params.velocityDissipation * dt), true);
         advect(dye, dye, dt, clearRate > 0 ? Math.exp(-clearRate * dt) : 1, false);
 
+        // sediment: lift scoured silt into the dye, update the bed, then react
+        runBed(dt);
+
         // reaction + diffusion
         runReaction(dt);
       }
@@ -756,11 +1089,142 @@ export function createSim(gl, { aspect = 1 } = {}) {
       clearRate = Math.max(0, rate || 0);
     },
 
-    /** Instantly wipe dye and velocity. */
+    /**
+     * Begin (rate > 0) or end (rate = 0) scouring the bed: it decays extra at `rate` per second.
+     * @param {number} rate
+     */
+    scour(rate) {
+      scourRate = Math.max(0, rate || 0);
+    },
+
+    /**
+     * Low-res CPU snapshot of ink + floor, area-averaged. Fresh arrays every call.
+     * Encoding per rgb byte: round(255 * sqrt(clamp(v / 1.5, 0, 1))); alpha 255; row 0 = bottom.
+     * @param {number} [width=160] snapshot width in texels (1..512); height follows the aspect
+     * @returns {{w:number,h:number,dye:Uint8Array,bed:Uint8Array}}
+     */
+    capture(width = 160) {
+      const w = Math.min(512, Math.max(1, Math.round(Number(width)) || 160));
+      const h = Math.min(512, Math.max(1, Math.round(w / curAspect)));
+      const key = w + 'x' + h;
+      let cap = captureCache.get(key);
+      if (!cap) {
+        if (captureCache.size >= 6) {
+          for (const c of captureCache.values()) { c.dye.dispose(); c.bed.dispose(); }
+          captureCache.clear();
+        }
+        cap = { dye: createFBO(gl, w, h, { float: false }), bed: createFBO(gl, w, h, { float: false }) };
+        captureCache.set(key, cap);
+      }
+      const vp = gl.getParameter(gl.VIEWPORT);
+      gl.disable(gl.BLEND);
+      progCapture.use();
+      i1(progCapture, 'uEncode', 1);
+      i1(progCapture, 'uManual', manual ? 1 : 0);
+      f2(progCapture, 'uFoot', 1 / w, 1 / h);
+      f2(progCapture, 'uTaps', tapsFor(dye.w, w), tapsFor(dye.h, h));
+      const out = { w, h, dye: new Uint8Array(w * h * 4), bed: new Uint8Array(w * h * 4) };
+      tex(progCapture, 'uSrc', dye.read.tex, 0);
+      cap.dye.bind();
+      drawFullscreen(gl);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, out.dye);
+      tex(progCapture, 'uSrc', bed.read.tex, 0);
+      cap.bed.bind();
+      drawFullscreen(gl);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, out.bed);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(vp[0], vp[1], vp[2], vp[3]);
+      return out;
+    },
+
+    /**
+     * Write a capture() snapshot back into the ink and/or floor. Velocity and pressure are untouched.
+     * blend >= 1 replaces the field with the bilinearly upsampled snapshot; blend < 1 nudges only
+     * the low frequencies: x = max(0, x + blend * (S - L)), L = local field area-averaged to the
+     * snapshot's resolution. Invalid input is ignored silently.
+     * @param {{w:number,h:number,dye:Uint8Array,bed:Uint8Array}} snap
+     * @param {{blend?:number,dye?:boolean,bed?:boolean}} [opts]
+     */
+    restore(snap, opts) {
+      if (!snap || typeof snap !== 'object') return;
+      const o = opts || {};
+      const doDye = o.dye !== false, doBed = o.bed !== false;
+      let blend = o.blend === undefined ? 1 : Number(o.blend);
+      if (Number.isNaN(blend)) blend = 1;
+      const { w, h } = snap;
+      if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w > 512 || h > 512) return;
+      const n = w * h * 4;
+      const okArr = (a) => !!a && ArrayBuffer.isView(a) && a.BYTES_PER_ELEMENT === 1 && a.length === n;
+      if ((doDye && !okArr(snap.dye)) || (doBed && !okArr(snap.bed))) return;
+      if (blend <= 0 || (!doDye && !doBed)) return;
+      const nudge = blend < 1;
+
+      const vp = gl.getParameter(gl.VIEWPORT);
+      const pa = gl.getParameter(gl.UNPACK_ALIGNMENT);
+      const pf = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
+      const pp = gl.getParameter(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL);
+      gl.disable(gl.BLEND);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); // row 0 = bottom already matches GL
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+
+      if (nudge && (!lowFbo || lowFbo.w !== w || lowFbo.h !== h)) {
+        if (lowFbo) lowFbo.dispose();
+        lowFbo = createFBO(gl, w, h); // float: the low-pass must not be quantised
+      }
+
+      const field = (target, bytes) => {
+        const snapTex = gl.createTexture();
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, snapTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+
+        if (nudge) {
+          // L: the local field averaged down to the snapshot grid, exactly as capture does (no encode)
+          progCapture.use();
+          i1(progCapture, 'uEncode', 0);
+          i1(progCapture, 'uManual', manual ? 1 : 0);
+          f2(progCapture, 'uFoot', 1 / w, 1 / h);
+          f2(progCapture, 'uTaps', tapsFor(target.w, w), tapsFor(target.h, h));
+          tex(progCapture, 'uSrc', target.read.tex, 0);
+          lowFbo.bind();
+          drawFullscreen(gl);
+        }
+
+        progRestore.use();
+        tex(progRestore, 'uSnap', snapTex, 0);
+        tex(progRestore, 'uLocal', nudge ? lowFbo.tex : snapTex, 1);
+        tex(progRestore, 'uField', target.read.tex, 2);
+        f1(progRestore, 'uBlend', Math.min(blend, 1));
+        i1(progRestore, 'uUseBlend', nudge ? 1 : 0);
+        i1(progRestore, 'uManualL', caps.linearFloat ? 0 : 1);
+        target.write.bind();
+        drawFullscreen(gl);
+        target.swap();
+        gl.deleteTexture(snapTex);
+      };
+      if (doDye) field(dye, snap.dye);
+      if (doBed) field(bed, snap.bed);
+
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, pa);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, pf);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, pp);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(vp[0], vp[1], vp[2], vp[3]);
+      gl.disable(gl.BLEND);
+      lastProbeFrame = -1000; // let the next probe() see the new picture
+    },
+
+    /** Instantly wipe dye, bed and velocity. */
     reset() {
       const vp = gl.getParameter(gl.VIEWPORT);
       gl.clearColor(0, 0, 0, 0);
-      for (const t of [dye.read, dye.write, velocity.read, velocity.write, pressure.read, pressure.write]) {
+      for (const t of [dye.read, dye.write, bed.read, bed.write, velocity.read, velocity.write,
+        pressure.read, pressure.write]) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
         gl.clear(gl.COLOR_BUFFER_BIT);
       }

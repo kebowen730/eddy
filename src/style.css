@@ -5,6 +5,9 @@
   --ink-text: rgba(255, 255, 255, 0.82);
   --ink-ctrl: rgba(255, 255, 255, 0.7);
   --ink-ctrl-hover: rgba(255, 255, 255, 0.08);
+  --veil: rgba(10, 12, 18, 0.55);
+  --veil-line: rgba(255, 255, 255, 0.08);
+  --ink-dim: rgba(255, 255, 255, 0.5);
   --ink-font: "Helvetica Neue", "Inter", system-ui, sans-serif;
 }
 
@@ -175,6 +178,231 @@ body {
   display: inline;
 }
 
+/* ---------- Share button badge ---------- */
+
+#btn-share {
+  position: relative;
+}
+
+#btn-share .badge {
+  position: absolute;
+  top: 3px;
+  right: 1px;
+  display: none;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--ink-font);
+  font-weight: 300;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--ink-text);
+  pointer-events: none;
+}
+
+#btn-share.live .badge {
+  display: inline-flex;
+}
+
+#btn-share .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(190, 225, 255, 0.85);
+  box-shadow: 0 0 6px rgba(190, 225, 255, 0.6);
+  transition: opacity 0.6s ease;
+}
+
+#btn-share.reconnecting .dot {
+  opacity: 0.35;
+}
+
+#btn-share .num {
+  font-weight: 300;
+}
+
+#btn-share .num:empty {
+  display: none;
+}
+
+/* ---------- Easel panel ---------- */
+
+#easel-panel {
+  position: fixed;
+  right: calc(14px + env(safe-area-inset-right, 0px));
+  bottom: calc(14px + 36px + 10px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+  width: min(300px, calc(100vw - 28px));
+  padding: 14px 16px 10px;
+  border-radius: 14px;
+  background: var(--veil);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--veil-line);
+  color: var(--ink-text);
+  font-family: var(--ink-font);
+  font-weight: 300;
+  touch-action: manipulation;
+  animation: panel-in 0.35s ease both;
+}
+
+#easel-panel[hidden] {
+  display: none;
+}
+
+.easel-status {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+}
+
+.easel-link {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 6px 0;
+  border: 0;
+  border-bottom: 1px solid var(--veil-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-dim);
+  font-family: var(--ink-font);
+  font-weight: 300;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.easel-link:focus {
+  color: var(--ink-text);
+  border-bottom-color: rgba(255, 255, 255, 0.25);
+}
+
+.easel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin-top: 6px;
+}
+
+.easel-btn {
+  margin: 0;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-ctrl);
+  font-family: var(--ink-font);
+  font-weight: 300;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.3s ease;
+}
+
+.easel-btn[hidden] {
+  display: none;
+}
+
+.easel-btn:hover {
+  opacity: 1;
+}
+
+.easel-btn:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.4);
+  outline-offset: 2px;
+}
+
+#easel-panel[data-empty] .easel-link,
+#easel-panel[data-empty] #easel-copy,
+#easel-panel[data-empty] #easel-share {
+  display: none;
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- Toast ---------- */
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
+  text-align: center;
+  font-family: var(--ink-font);
+  font-weight: 300;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--ink-text);
+  text-shadow: 0 0 10px rgba(0, 0, 0, 0.6);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.6s ease;
+}
+
+#toast.show {
+  opacity: 0.8;
+}
+
+@media (max-width: 600px) {
+  /* clear the control cluster, and the panel when it is open */
+  #toast {
+    bottom: calc(66px + env(safe-area-inset-bottom, 0px));
+  }
+
+  html.easel-open #toast {
+    bottom: calc(220px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* ---------- Remote presence glows ---------- */
+
+#presence {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+#presence .glow {
+  position: absolute;
+  left: -28px;
+  top: -28px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: radial-gradient(circle, hsla(var(--hue, 200), 60%, 75%, 0.55) 0%, hsla(var(--hue, 200), 60%, 75%, 0.18) 45%, hsla(var(--hue, 200), 60%, 75%, 0) 72%);
+  filter: blur(3px);
+  mix-blend-mode: screen;
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform, opacity;
+  transition: transform 80ms linear, opacity 1.2s ease;
+}
+
+#presence .glow.on {
+  opacity: 0.6;
+  transition: transform 80ms linear, opacity 0.25s ease;
+}
+
+#presence .glow.jump {
+  transition: opacity 0.25s ease;
+}
+
 /* ---------- Fallback (no WebGL2) ---------- */
 
 #fallback {
@@ -221,7 +449,18 @@ body {
   }
 
   #controls,
-  .ctrl {
+  .ctrl,
+  #toast,
+  .easel-btn {
     transition: none;
+  }
+
+  #easel-panel {
+    animation: none;
+  }
+
+  #presence .glow,
+  #presence .glow.on {
+    transition: opacity 0.2s linear;
   }
 }

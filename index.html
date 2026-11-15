@@ -20,7 +20,29 @@
       <span class="hint">stir</span>
     </div>
 
+    <div id="presence" aria-hidden="true"></div>
+
+    <div id="easel-panel" role="dialog" aria-label="Easel" hidden>
+      <p class="easel-status" id="easel-status"></p>
+      <input id="easel-link" class="easel-link" type="text" readonly spellcheck="false" autocomplete="off" aria-label="Easel link" />
+      <div class="easel-actions">
+        <button id="easel-copy" class="easel-btn" type="button">copy link</button>
+        <button id="easel-share" class="easel-btn" type="button" hidden>share…</button>
+        <button id="easel-leave" class="easel-btn" type="button">leave</button>
+      </div>
+    </div>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+
     <div id="controls">
+      <button id="btn-share" class="ctrl" type="button" aria-label="Share this easel" title="Share this easel">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="9" cy="12" r="5" />
+          <circle cx="15" cy="12" r="5" />
+        </svg>
+        <span class="badge" aria-hidden="true"><i class="dot"></i><b class="num"></b></span>
+      </button>
+
       <button id="btn-mute" class="ctrl" type="button" aria-label="Mute sound" aria-pressed="false" title="Mute sound">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M4 9.5v5h3.2L12 18.5v-13L7.2 9.5H4z" />

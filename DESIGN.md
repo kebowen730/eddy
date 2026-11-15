@@ -241,14 +241,15 @@ The bed is never advected. It is stretched on `resize` exactly like the dye.
 New `params` (all live-tunable; the numbers are starting points):
 
 ```js
-bedDeposit: 0.5,    // fraction of dying ink mass that settles (0 disables sediment)
+bedDeposit: 0.1,    // fraction of dying ink mass that settles (0 disables sediment)
+bedFadeShare: 0.6,  // weight of void-fade loss in the deposit, relative to starvation
 bedMax: 1.0,        // soft cap on bed height
-bedErode: 0.5,      // scour rate (1/s) of the bed under full-speed flow
-bedErodeLo: 0.12,   // flow speed (heights/s) where scouring starts
-bedErodeHi: 0.8,    // flow speed where scouring is at full rate
+bedErode: 0.35,     // scour rate (1/s) of the bed under full-speed flow
+bedErodeLo: 0.25,   // flow speed (heights/s) where scouring starts
+bedErodeHi: 1.2,    // flow speed where scouring is at full rate
 bedLift: 0.5,       // fraction of scoured sediment that returns to the water as ink
 bedSettle: 0.003,   // slow uniform decay of the bed (1/s)
-bedSmooth: 0.05,    // diffusion of the bed in cell^2/s, keeps relief smooth
+bedSmooth: 0.6,     // diffusion of the bed in cell^2/s, keeps relief smooth
 bedDrag: 1.0,       // extra velocity damping (1/s) per unit bed height
 bedDeflect: 3.0,    // how strongly flow heading uphill is turned along the contours
 bedSlope: 0.5,      // downhill acceleration of ink: f = -bedSlope * rho * grad(h)
@@ -256,7 +257,9 @@ bedFertility: 0.3,  // 0..1: how much a full bed lowers the Allee threshold / bo
 ```
 
 "Dying" mass per species per second is the non-predation loss in the reaction:
-`c_i * (decay + starve * (1 - live) + voidFade * (1 - gate))`. Predation is not death.
+`c_i * (decay + starve * (1 - live) + bedFadeShare * voidFade * (1 - gate))`. Predation is
+not death. The bed is written through an unbiased stochastic rounding to the half-float grid,
+because its per-frame change is smaller than one half-float step and some GPUs truncate.
 
 New API on the sim object:
 
@@ -294,7 +297,8 @@ the server in dev). `opts.allowAnyOrigin` (default false) disables the origin ch
 
 - Easel id: `^[a-z0-9]{8,32}$`. Path: `/ws/<id>`.
 - Origin check: the `Origin` header's host must equal the `Host` header.
-- A room holds up to **6** peers. Peer ids are integers 1..250, unique within a room.
+- A room holds up to **6** peers. Peer ids are small integers (lowest free of 1..6), unique
+  within a room and reused after someone leaves.
 - The **keeper** is the longest-connected peer in the room.
 - Server -> client JSON (text frames):
   - on connect: `{"t":"hello","id":<self>,"peers":[<others>],"keeper":<id>}`
@@ -324,7 +328,8 @@ JSON:
 
 - `{"t":"f","s":[[x,y,vx,vy,a,b,c,r,amt],...],"w":[[x,y,strength,radius],...]}`: a batch of
   splats and wells, flushed at most 30 times a second, at most 48 splats and 12 wells each.
-  Numbers rounded to 4 decimals. Either array may be omitted.
+  Numbers rounded to 4 decimals. Either array may be omitted. A splat may carry a 10th
+  entry `1` meaning "quiet": autopilot ink from the keeper, applied but not shown as a touch.
 - `{"t":"ev","k":<kind>,"d":{...}}`: `tide` `{x,y,chirality}`, `season` `{index}`,
   `clear` `{scour:boolean}`, `state` `{season,chirality}`.
 - `{"t":"want"}`: a newcomer asks for the full snapshot. Only the keeper answers.
@@ -346,7 +351,7 @@ export function createEasel(handlers)   // -> easel
 // handlers (all optional):
 //   onStatus(status)   'off' | 'connecting' | 'live' | 'reconnecting' | 'full'
 //   onPeers(peers, selfId, keeperId)       peers = ids of the OTHER people, number[]
-//   onSplat(from, x, y, vx, vy, species, radius, amount)   species is a reused [a,b,c]
+//   onSplat(from, x, y, vx, vy, species, radius, amount, quiet)   species is a reused [a,b,c]
 //   onWell(from, x, y, strength, radius)
 //   onEvent(from, kind, data)              kind and data as in the wire format
 //   onSnapshot(from, kind, snap)           kind 'full' | 'sync'; snap {w,h,dye,bed} RGBA
@@ -356,8 +361,8 @@ export function createEasel(handlers)   // -> easel
 //   create()            -> new id (10 chars a-z0-9 from crypto.getRandomValues); joins it
 //   join(id)            connect to ws(s)://<host>/ws/<id>
 //   leave()             disconnect; status 'off'
-//   splat(x, y, vx, vy, species, radius, amount)    queue for the next flush
-//   well(x, y, strength, radius)                    queue for the next flush
+//   splat(x, y, vx, vy, species, radius, amount, quiet)   queue for the next flush
+//   well(x, y, impulse, radius)                     queue; impulse = sim strength * dt
 //   send(kind, data)                                send an "ev" now
 //   sendSnapshot(kind, snap, to = 0)                kind 'full' | 'sync'
 //   update(dt)                                      call every frame; flushes the queues

@@ -26,6 +26,29 @@ uniform vec3 uLabP;
 uniform vec3 uDeep;
 uniform vec3 uPearl;
 uniform vec3 uAccent;
+uniform sampler2D uBed;
+uniform float uBedOn;
+uniform vec2 uBedTexel;
+
+// ---- floor (sediment) tunables
+const float SEAM_STEP = 0.12;        // height between contour seams
+const float SEAM_START = 0.12;       // height of the first seam (flat empty floor has none)
+const float SEAM_PX = 1.2;           // seam width in screen pixels
+const float SEAM_GAIN = 0.6;        // HDR peak brightness of seams (crests brightest)
+const float SEAM_FADE_LO = 0.006;    // seams fade out where fwidth(level) is below this (too flat)
+const float SEAM_FADE_HI = 0.03;     //   ... and are full strength above this
+const float SEAM_UNDER_INK = 0.25;   // fraction of seam brightness that survives under thick ink
+const float SEAM_GLINT = 0.4;        // depth of the travelling glint along seams (0..1)
+const float CREST_GAIN = 40.0;       // sensitivity of the crest highlight to the Laplacian
+const float CREST_GLOW = 0.6;        // extra seam brightness on crests
+const float BODY_L = 0.38;           // mineral stain lightness relative to ink lightness
+const float BODY_C = 0.55;            // mineral stain chroma relative to ink chroma
+const float BODY_MIX = 0.6;         // how strongly the stain replaces the void
+const float BODY_HOLLOW = 0.25;      // how much the void darkens in sediment hollows
+const float RELIEF = 6.0;            // bed normal slope strength (height per texel scaled up)
+const float RELIEF_LIGHT = 0.05;     // brightness of lit ridge sides
+const float RELIEF_SHADE = 0.8;      // darkening of lee sides
+const float BED_INK_POW = 1.5;       // total (1-alpha) exponent applied to body and relief
 
 vec3 oklabToLinear(vec3 c) {
   float l_ = c.x + 0.3963377774 * c.y + 0.2158037573 * c.z;
@@ -154,7 +177,57 @@ void main() {
   bg += uDeep * 0.7 * exp(-rad * rad * 2.8);
   bg += mix(uPearl, uAccent, cloud) * 0.0012 * (1.0 - vig) * (0.4 + cloud);
 
+  // ---- the floor, drawn into the background under the ink
+  vec3 seamAdd = vec3(0.0);
+  if (uBedOn > 0.5) {
+    vec3 b0 = max(texture(uBed, uv).rgb, vec3(0.0));
+    float bh = b0.r + b0.g + b0.b;
+    float bR = dot(max(texture(uBed, uv + vec2(uBedTexel.x, 0.0)).rgb, vec3(0.0)), vec3(1.0));
+    float bL = dot(max(texture(uBed, uv - vec2(uBedTexel.x, 0.0)).rgb, vec3(0.0)), vec3(1.0));
+    float bT = dot(max(texture(uBed, uv + vec2(0.0, uBedTexel.y)).rgb, vec3(0.0)), vec3(1.0));
+    float bB = dot(max(texture(uBed, uv - vec2(0.0, uBedTexel.y)).rgb, vec3(0.0)), vec3(1.0));
+    float veil = pow(max(1.0 - alpha, 0.0), BED_INK_POW - 1.0);   // times (1-alpha) in the mix below
+    float hideK = 1.0 - clamp(pearlK + front * 0.8, 0.0, 1.0);
+
+    // mineral body
+    vec3 bw = b0 / max(bh, 1e-3);
+    vec3 blab = bw.x * uLabA + bw.y * uLabB + bw.z * uLabC;
+    blab.x *= BODY_L;
+    blab.yz *= BODY_C;
+    float bodyK = smoothstep(0.0, 0.3, bh);
+    bg *= 1.0 - BODY_HOLLOW * bodyK * veil;
+    bg = mix(bg, oklabToLinear(blab), bodyK * BODY_MIX * veil);
+
+    // relief
+    vec2 bg2 = vec2(bR - bL, bT - bB) * 0.5;
+    vec3 bn = normalize(vec3(-bg2 * RELIEF, 1.0));
+    float rel = dot(bn, Ld) - Ld.z;
+    float relMask = smoothstep(0.02, 0.2, bh) * veil;
+    bg *= 1.0 + RELIEF_SHADE * min(rel, 0.0) * relMask;
+    bg += mix(oklabToLinear(blab * vec3(2.0, 1.0, 1.0)), uPearl, 0.3) * RELIEF_LIGHT * max(rel, 0.0) * relMask;
+
+    // seams: hairline contours of constant screen width
+    // levels are evenly spaced in sqrt(height): young, shallow floors already show lines
+    float lx = (sqrt(max(bh, 0.0)) - SEAM_START) / SEAM_STEP;
+    float fw = max(fwidth(lx), 1e-5);
+    float fr = fract(lx);
+    float dl = min(fr, 1.0 - fr);
+    float hw = 0.5 * SEAM_PX * fw;
+    float line = 1.0 - smoothstep(max(hw - 0.5 * fw, 0.0), hw + 0.5 * fw, dl);
+    line *= smoothstep(SEAM_FADE_LO, SEAM_FADE_HI, fw);
+    line *= step(-0.5, lx) * smoothstep(0.006, 0.03, bh);
+    float lap = bR + bL + bT + bB - 4.0 * bh;
+    float crest = smoothstep(0.0, 1.0, -lap * CREST_GAIN) * smoothstep(0.35, 0.8, bh);
+    float glint = (1.0 - SEAM_GLINT) + SEAM_GLINT * sin(dot(pc, vec2(2.7, 1.9)) * 4.0 + bh * 14.0 - uTime * 0.35);
+    vec3 seamCol = mix(uAccent, uPearl, smoothstep(0.15, 0.9, bh));
+    float seamI = SEAM_GAIN * line * glint * (0.35 + 0.65 * smoothstep(0.05, 0.8, bh)) * (1.0 + CREST_GLOW * crest);
+    float seamVis = mix(SEAM_UNDER_INK, 1.0, pow(max(1.0 - alpha, 0.0), BED_INK_POW)) * hideK;
+    seamAdd = seamCol * seamI * seamVis;
+    seamAdd += seamCol * 0.04 * crest * smoothstep(0.02, 0.2, fw * 10.0) * seamVis * veil;
+  }
+
   vec3 col = mix(bg, ink, alpha);
+  col += seamAdd;
   col += iri * (0.4 + 0.6 * alpha);
   col += specCol * spec * (0.3 + 0.7 * alpha);
   col += uPearl * ink * pearlK * 0.22;   // pearls glow
@@ -327,6 +400,18 @@ export function createRenderer(gl) {
     }
   }
 
+  let black = null;
+  function blackTex() {
+    if (!black) {
+      black = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, black);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+    }
+    return black;
+  }
+
   function setLab(loc, rgb) {
     linearToOklab(rgb, lab);
     gl.uniform3f(loc, lab[0], lab[1], lab[2]);
@@ -352,6 +437,12 @@ export function createRenderer(gl) {
     gl.uniform1f(u.uTime, time);
     gl.uniform1f(u.uChir, p.chirality < 0 ? -1 : 1);
     gl.uniform1f(u.uTide, p.tide || 0);
+    const bedOn = !!p.bedTex;
+    bindTex(gl, u.uBed, bedOn ? p.bedTex : blackTex(), 2);
+    gl.uniform1f(u.uBedOn, bedOn ? 1 : 0);
+    const bw = p.bedSize ? p.bedSize[0] : dw;
+    const bh = p.bedSize ? p.bedSize[1] : dh;
+    gl.uniform2f(u.uBedTexel, 1 / Math.max(1, bw), 1 / Math.max(1, bh));
     setLab(u.uLabA, colors.a);
     setLab(u.uLabB, colors.b);
     setLab(u.uLabC, colors.c);

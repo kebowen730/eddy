@@ -106,7 +106,7 @@ const ease = (t) => t * t * (3 - 2 * t);
 
 /**
  * Create the colour-season controller.
- * @returns {{update(dt:number):void, next():void, colors:object, seasonIndex:number, seasonName:string}}
+ * @returns {{update(dt:number):void, next():void, goTo(i:number):void, targetIndex:number, colors:object, seasonIndex:number, seasonName:string}}
  */
 export function createPalette() {
   let idx = Math.floor(Math.random() * N);
@@ -132,6 +132,9 @@ export function createPalette() {
     seasonName: SEASON_DEFS[idx].name,
     update,
     next,
+    goTo,
+    /** The season the palette is in or fading toward. */
+    get targetIndex() { return fading ? nxt : idx; },
   };
 
   function blend() {
@@ -150,6 +153,18 @@ export function createPalette() {
   }
 
   function next() { startFade(QUICK_FADE); }
+
+  /** Fade quickly to season `i` (no-op if already there or heading there). Used to follow a shared easel. */
+  function goTo(i) {
+    i = (((i | 0) % N) + N) % N;
+    if (i === (fading ? nxt : idx)) return;
+    blend();
+    from.set(cur);
+    nxt = i;
+    fading = true;
+    fadeT = 0;
+    fadeDur = QUICK_FADE;
+  }
 
   function update(dt) {
     time += dt;
