@@ -62,7 +62,10 @@ deploy() {
   echo "==> Deploying $tag to $name"
   (cd "$src" && flyctl deploy --app "$name" --ha=false)
   # First deploys do not always get public addresses; make sure they exist.
-  if ! flyctl ips list --app "$name" 2>/dev/null | grep -qE '^v[46]'; then
+  # Capture the list first: piping straight into `grep -q` under pipefail reports failure when
+  # grep exits early, which would allocate a second set of addresses for an app that has them.
+  local ips
+  if ips="$(flyctl ips list --app "$name" 2>/dev/null)" && ! grep -qE '^v[46]' <<<"$ips"; then
     echo "==> Allocating public IPs for $name"
     flyctl ips allocate-v4 --shared --app "$name"
     flyctl ips allocate-v6 --app "$name"
