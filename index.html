@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#07090d" />
+    <meta name="description" content="A slow, living ink pool. No points. Just currents." />
+    <meta property="og:title" content="Eddy" />
+    <meta property="og:description" content="A slow, living ink pool. No points. Just currents." />
+    <meta property="og:type" content="website" />
+    <title>Eddy</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+
+    <div id="title">
+      <span class="word">eddy</span>
+      <span class="hint">stir</span>
+    </div>
+
+    <div id="controls">
+      <button id="btn-mute" class="ctrl" type="button" aria-label="Mute sound" aria-pressed="false" title="Mute sound">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 9.5v5h3.2L12 18.5v-13L7.2 9.5H4z" />
+          <g class="icon-on">
+            <path d="M15.5 9.2a4 4 0 0 1 0 5.6" />
+            <path d="M18.2 6.5a7.8 7.8 0 0 1 0 11" />
+          </g>
+          <g class="icon-off">
+            <path d="M16 9.5l5 5M21 9.5l-5 5" />
+          </g>
+        </svg>
+      </button>
+
+      <button id="btn-season" class="ctrl" type="button" aria-label="Next season" title="Next season">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="6.5" r="2.5" />
+          <circle cx="7" cy="16" r="2.5" />
+          <circle cx="17" cy="16" r="2.5" />
+        </svg>
+      </button>
+
+      <button id="btn-save" class="ctrl" type="button" aria-label="Save image" title="Save image">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 4v11" />
+          <path d="M7.5 10.5 12 15l4.5-4.5" />
+          <path d="M5 19.5h14" />
+        </svg>
+      </button>
+
+      <button id="btn-fullscreen" class="ctrl" type="button" aria-label="Fullscreen" title="Fullscreen">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+        </svg>
+      </button>
+    </div>
+
+    <div id="fallback" hidden>
+      <p>Eddy needs WebGL2 — try a recent Chrome, Firefox or Safari.</p>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

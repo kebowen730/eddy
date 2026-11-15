@@ -1,0 +1,15 @@
+{
+  "name": "eddy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Eddy — a slow, living ink game. No points. Just currents.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}

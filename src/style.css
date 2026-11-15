@@ -1,0 +1,227 @@
+/* Eddy — shell styles. The canvas is the piece; everything here is whisper-quiet. */
+
+:root {
+  --ink-void: #07090d;
+  --ink-text: rgba(255, 255, 255, 0.82);
+  --ink-ctrl: rgba(255, 255, 255, 0.7);
+  --ink-ctrl-hover: rgba(255, 255, 255, 0.08);
+  --ink-font: "Helvetica Neue", "Inter", system-ui, sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--ink-void);
+  overflow: hidden;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  display: block;
+  touch-action: none;
+  cursor: default;
+}
+
+/* ---------- Title card ---------- */
+
+#title {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--ink-text);
+  mix-blend-mode: screen;
+  opacity: 0;
+  animation: title-in 2s ease forwards;
+}
+
+#title .word {
+  display: block;
+  font-family: var(--ink-font);
+  font-weight: 200;
+  font-size: clamp(48px, 12vw, 140px);
+  line-height: 1;
+  letter-spacing: 0.35em;
+  /* compensate trailing tracking so the word sits optically centred */
+  padding-left: 0.35em;
+  margin: 0;
+}
+
+#title .hint {
+  display: block;
+  margin-top: 2.2rem;
+  font-family: var(--ink-font);
+  font-weight: 300;
+  font-size: 13px;
+  letter-spacing: 0.5em;
+  padding-left: 0.5em;
+  opacity: 0.5;
+  animation: hint-pulse 5s ease-in-out infinite;
+}
+
+#title.gone {
+  animation: title-out 2.5s ease forwards;
+}
+
+@keyframes title-in {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+@keyframes title-out {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    letter-spacing: 0.35em;
+  }
+  to {
+    opacity: 0;
+    filter: blur(10px);
+    letter-spacing: 0.5em;
+  }
+}
+
+@keyframes hint-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* ---------- Controls ---------- */
+
+#controls {
+  position: fixed;
+  right: calc(14px + env(safe-area-inset-right, 0px));
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.6s ease;
+}
+
+#controls.visible {
+  opacity: 0.75;
+  pointer-events: auto;
+}
+
+.ctrl {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-ctrl);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+
+.ctrl:hover {
+  background: var(--ink-ctrl-hover);
+}
+
+.ctrl:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.4);
+  outline-offset: 2px;
+}
+
+.ctrl svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  overflow: visible;
+}
+
+/* Mute toggle: "on" icon (waves) by default, "off" icon (slash) when muted. */
+#btn-mute .icon-off {
+  display: none;
+}
+
+#btn-mute.muted .icon-on {
+  display: none;
+}
+
+#btn-mute.muted .icon-off {
+  display: inline;
+}
+
+/* ---------- Fallback (no WebGL2) ---------- */
+
+#fallback {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  text-align: center;
+}
+
+#fallback[hidden] {
+  display: none;
+}
+
+#fallback p {
+  margin: 0;
+  max-width: 28em;
+  font-family: var(--ink-font);
+  font-weight: 300;
+  font-size: 16px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  #title {
+    animation: none;
+    opacity: 1;
+  }
+
+  #title .hint {
+    animation: none;
+    opacity: 0.45;
+  }
+
+  #title.gone {
+    animation: none;
+    opacity: 0;
+  }
+
+  #controls,
+  .ctrl {
+    transition: none;
+  }
+}
